@@ -1,0 +1,107 @@
+---
+title: "Australia as a Circle"
+author: "Russell Dinnage"
+date: "03/10/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Is Australia a Circle?
+
+No, it is not. On the other hand, if it was, would it make much difference? Geophysically, probably, but in many other ways, maybe not.
+
+What on Earth am I talking about? I'm talking about approximating (mainland) Australia as a circle, which is what I am going to show you how to do in this post. Why would I want to do this? Well, it turns out there could be many reasons why approximating Australia as a circle could be useful, which I will talk about later. In the mean-time, I will just say, because it popped into my head the other day and now I have to do it. In other words, it sounds like fun! So let's try.
+
+## How to Convert Australia into a Circle, or rather, a Disc?
+
+I started out saying I wanted to approximate Australia as a circle, but what I actually mean is that I want to map Australia onto the unit disc. What is the difference between a circle and a disc? A circle is all the points which lie in a plane and are equidistant to some centre. A disk is all the points that fall inside a circle (and may or may not include the circle itself). So the new coastline of my round Australia will be a circle, but Australia itself will be a disc -- I will be making Australia into a Discworld. 
+
+So what I want to do is map every point inside Australia onto a point inside a unit circle. To do this, I will start with the idea of expressing each point in the unit circle in polar coordinates. Polar coordinates allow us to locate a point in the circle with two values, a radius (which must be less than or equal to one), and an angle (which must be between 0 and 360 degrees) between a line drawn from the origin and passing through the point and an arbitrary reference line passing through the origin. [image of polar coordinates]. 
+
+Now it is fairly simple to think of an analog of these two measures for the real-world Australia. For the radius we can calculate the distance between any point in Australia and Australia's centre. We can then standardise this distance by dividing it by the length of the line segment passing throught the point and bounded by Australia's centre and it's coastline. Likewise, we can find the point at which this same line meets the coastline, and use it to calculate an "angle". Here we simply find the length between this point and an arbitrary reference point on the coastline as measured along the coastline. We then divide this by the entire length of the Australian coastline, giving us a proportion. We can then map this to an angle by multiplying by 360 degrees. It is also fairly straightforward to reverse this procedure, and map any point in the unit disc to Australia.
+
+Now all we need is some points to actually map onto the disc, and we can test this idea out! Let's get the location of major citiesto start. We will also grab a map of Australia's coastline to work with. We will use the packages `rnaturalearth` and `sf` extensively. We will use the `maps` package for city data. And of course, `tidyverse`.
+
+```{r get_start_data}
+library(rnaturalearth)
+library(sf)
+library(maps)
+library(rmapshaper)
+library(tidyverse)
+library(ggplot2)
+
+Oz_cities <- world.cities %>%
+  dplyr::filter(country.etc == "Australia",
+                pop > 1000000 | name == "Darwin" | name == "Canberra")
+
+Oz_coast <- rnaturalearth::ne_states("Australia", returnclass = "sf") %>%
+  dplyr::filter(code_hasc %in% c("AU.NT",
+                                 "AU.WA",
+                                 "AU.CT",
+                                 "AU.NS",
+                                 "AU.SA",
+                                 "AU.VI",
+                                 "AU.QL")) %>%
+  rmapshaper::ms_filter_islands(1e+12) %>% ## get only mainland Australia
+  rmapshaper::ms_simplify(0.5) %>% ## simplify coast a little for easier computation later
+  sf::st_union()
+
+ggplot(Oz_coast) +
+  geom_sf(fill = "grey20") +
+  theme_minimal()
+
+```
+
+Okay, great. Now let's start by mapping one city from Australia to the unit disc. We will try the capital of Australia first, Canberra. First we need to convert our Australia polygon into a (coast-)line. Then we need to find the centre of Australia and pass a line through it and Canberra. 
+
+```{r pass_line_through_Canberra}
+Oz_coastline <- sf::st_cast(Oz_coast, "LINESTRING")
+plot(Oz_coastline)
+
+Oz_centre <- Oz_coast %>%
+  sf::st_transform(3112) %>% ## Geoscience AUstralia Lambert
+  sf::st_centroid() %>%
+  sf::st_transform(4326) %>% ## back to long-lat
+  sf::st_coordinates()
+
+canberra_coords <- Oz_cities %>%
+  dplyr::filter(name == "Canberra") %>%
+  dplyr::select(long, lat) %>%
+  unlist()
+
+## Make line from centre to Canberra
+init_line <- sf::st_linestring(rbind(Oz_centre, canberra_coords))
+
+plot(Oz_coastline)
+plot(init_line, add = TRUE)
+
+## We need to extend the line until or past the coastline
+new_total_len <- 20 ## arbitrary large distance (in degrees) to make sure line gets past coast
+current_line_len <- sqrt((Oz_centre[1] - canberra_coords[1])^2 + (Oz_centre[2] - canberra_coords[2])^2)
+new_x = canberra_coords[1] + (canberra_coords[1] - Oz_centre[1]) / current_line_len * new_total_len
+new_y = canberra_coords[2] + (canberra_coords[2] - Oz_centre[2]) / current_line_len * new_total_len
+new_end <- c(new_x, new_y)
+
+final_line <- sf::st_linestring(rbind(Oz_centre, new_end))
+plot(Oz_coastline)
+plot(final_line, add = TRUE)
+
+projection_line <- st_sfc(final_line, crs = sf::st_crs(Oz_coastline))
+
+```
+
+Okay, next we need to get the point of the coast where this line intersects.
+
+```{r line_intersect}
+point_of_intersection <- sf::st_intersection(Oz_coastline, projection_line)
+plot(Oz_coastline)
+plot(projection_line, add = TRUE)
+plot(point_of_intersection, add = TRUE)
+plot(sf::st_point(canberra_coords), col = "red", add = TRUE)
+```
+
+## Spherical Cows
+
