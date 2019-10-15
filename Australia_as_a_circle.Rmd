@@ -134,13 +134,29 @@ plot(cutter, add = TRUE)
 I'm honestly not sure why I got three segments, but it looks like the green section is what I want. The question is, how do I reliably find the correct segment. One easy way would be to convert my two line cutter into a pie wedge kind of thingie, and instead of using `st_split`, I could use `st_intersection`. Let's try that. 
 
 ```{r make_pie_wedge}
-extra_edges <- matrix(c(new_end[1], new_end[1], top_point[1], new_end[2], top_point[2], top_point[2]),
-                         nrow = 3) %>%
-  sf::st_linestring() %>%
+
+calc_line_angle <- function(end_xy) {
+  atan2(end_xy[2], end_xy[1]) * (-1) + (pi/2)
+}
+
+end_of_projection_line <- projection_line %>%
+                         sf::st_coordinates() %>%
+                         .[2, 1:2]
+ang <- calc_line_angle(end_of_projection_line)
+
+## draw circle arc to connect reference and projection line
+extra_segments <- sapply(c(seq(pi/2, pi/2 - ang, by = -0.1), pi/2 - ang), function(theta) Oz_centre + new_total_len * c(cos(theta), sin(theta))) %>%
+  t %>%
+  rbind(end_of_projection_line) %>%
+  sf::st_linestring()  %>%
   sf::st_sfc(crs = sf::st_crs(Oz_coastline))
 
-wedge <- sf::st_combine(c(cutter, extra_edges)) %>%
-  sf::st_polygonize()
+wedge <- sf::st_union(reference_line, extra_segments) %>%
+  sf::st_union(projection_line) %>%
+  sf::st_cast("POINT") %>% 
+  sf::st_sf() %>%
+  concaveman::concaveman() ## trick to make a good polygon even if points don't exactly meet or are out of order
+
 plot(wedge)
 
 ## get line segment
