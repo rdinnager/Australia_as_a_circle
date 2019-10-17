@@ -33,8 +33,48 @@ ggplot(Oz_tri) +
   geom_sf(fill = "grey80") +
   theme_minimal()
 
-Oz_tri_lines <- Oz_tri %>%
+Oz_tri_edges <- Oz_tri %>%
   sf::st_cast() %>%
   sf::st_sf() %>%
+  #dplyr::mutate(triangle_id = 1:n()) %>%
+  sf::st_cast("MULTILINESTRING", do_split = FALSE) %>%
+  sf::st_geometry() %>%
+  purrr::map(~as.matrix(.)) %>%
+  purrr::map(~lapply(list(1:2, 2:3, c(3,1)), function(x) .[x, ])) %>%
+  purrr::map(~sf::st_multilinestring(.)) %>%
+  sf::st_sfc() %>%
+  sf::st_sf() %>%
+  dplyr::mutate(triangle_id = 1:n()) %>%
   sf::st_cast("LINESTRING", do_split = TRUE) %>%
-  sf::st_coordinates()
+  dplyr::mutate(edge_id = 1:n())
+
+Oz_tri_nodes <- Oz_tri_edges %>%
+  sf::st_coordinates() %>%
+  dplyr::as_tibble() %>%
+  dplyr::rename(edge_id = L1) %>%
+  dplyr::group_by(edge_id) %>%
+  dplyr::slice(c(1, n())) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(start_end = rep(c('start', 'end'), times = n()/2)) %>%
+  dplyr::mutate(node_id = dplyr::group_indices(., X, Y))
+
+
+source_nodes <- Oz_tri_nodes %>%
+  dplyr::filter(start_end == 'start') 
+
+target_nodes <- Oz_tri_nodes %>%
+  dplyr::filter(start_end == 'end')
+
+Oz_tri_edges = Oz_tri_edges %>%
+  dplyr::left_join(source_nodes %>%
+                     dplyr::select(edge_id,
+                                   from = node_id)) %>%
+  dplyr::left_join(target_nodes %>%
+                     dplyr::select(edge_id,
+                                   to = node_id))
+  
+Oz_tri_nodes <- Oz_tri_nodes %>%
+  dplyr::distinct(node_id, .keep_all = TRUE) %>%
+  dplyr::select(-edge_id, -start_end) %>%
+  sf::st_as_sf(coords = c('X', 'Y')) %>%
+  sf::st_set_crs(st_crs(Oz_tri_edges))
