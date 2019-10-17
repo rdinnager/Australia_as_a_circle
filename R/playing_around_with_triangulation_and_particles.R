@@ -36,11 +36,10 @@ ggplot(Oz_tri) +
 Oz_tri_edges <- Oz_tri %>%
   sf::st_cast() %>%
   sf::st_sf() %>%
-  #dplyr::mutate(triangle_id = 1:n()) %>%
   sf::st_cast("MULTILINESTRING", do_split = FALSE) %>%
   sf::st_geometry() %>%
   purrr::map(~as.matrix(.)) %>%
-  purrr::map(~lapply(list(1:2, 2:3, c(3,1)), function(x) .[x, ])) %>%
+  purrr::map(~lapply(list(1:2, 2:3, 3:4), function(x) .[x, ])) %>%
   purrr::map(~sf::st_multilinestring(.)) %>%
   sf::st_sfc() %>%
   sf::st_sf() %>%
@@ -78,3 +77,5 @@ Oz_tri_nodes <- Oz_tri_nodes %>%
   dplyr::select(-edge_id, -start_end) %>%
   sf::st_as_sf(coords = c('X', 'Y')) %>%
   sf::st_set_crs(st_crs(Oz_tri_edges))
+
+plot(Oz_tri_nodes)
