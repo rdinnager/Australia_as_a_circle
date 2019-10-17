@@ -5,6 +5,9 @@ library(rmapshaper)
 library(tidyverse)
 library(ggplot2)
 library(sfdct)
+library(tidygraph)
+library(ggraph)
+library(particles)
 
 Oz_cities <- world.cities %>%
   dplyr::filter(country.etc == "Australia",
@@ -81,3 +84,20 @@ Oz_tri_nodes <- Oz_tri_nodes %>%
   sf::st_set_crs(st_crs(Oz_tri_edges))
 
 plot(Oz_tri_nodes)
+
+Oz_tri_graph = tidygraph::tbl_graph(nodes = Oz_tri_nodes, edges = as_tibble(Oz_tri_edges), directed = FALSE)
+
+Oz_tri_graph
+
+Oz_tri_graph <- Oz_tri_graph %>%
+  tidygraph::activate(edges) %>%
+  dplyr::mutate(length = sf::st_length(geometry))
+
+ggraph(Oz_tri_graph) +
+  geom_edge_link()
+
+ggraph(Oz_tri_graph, "fr") +
+  geom_edge_link()
+
+ggraph(Oz_tri_graph, "kk") +
+  geom_edge_link()
