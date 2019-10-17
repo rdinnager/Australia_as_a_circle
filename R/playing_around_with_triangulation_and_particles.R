@@ -1,3 +1,5 @@
+## This owes a lot to https://www.r-spatial.org/r/2019/09/26/spatial-networks.html
+
 library(rnaturalearth)
 library(sf)
 library(maps)
