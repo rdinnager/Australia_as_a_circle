@@ -71,6 +71,8 @@ Oz_tri_edges = Oz_tri_edges %>%
   dplyr::left_join(target_nodes %>%
                      dplyr::select(edge_id,
                                    to = node_id))
+
+plot(Oz_tri_edges)
   
 Oz_tri_nodes <- Oz_tri_nodes %>%
   dplyr::distinct(node_id, .keep_all = TRUE) %>%
