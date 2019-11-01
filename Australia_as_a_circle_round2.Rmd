@@ -1,0 +1,308 @@
+---
+title: "Australia as a Circle"
+author: "Russell Dinnage"
+date: "03/10/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Is Australia a Circle?
+
+No, it is not. On the other hand, if it was, would it make much difference? Geophysically, probably, but in many other ways, maybe not.
+
+What on Earth am I talking about? I'm talking about approximating (mainland) Australia as a circle, which is what I am going to show you how to do in this post. Why would I want to do this? Well, it turns out there could be many reasons why approximating Australia as a circle could be useful, which I will talk about later. In the mean-time, I will just say, because it popped into my head the other day and now I have to do it. In other words, it sounds like fun! So let's try.
+
+## How to Convert Australia into a Circle, or rather, a Disc?
+
+I started out saying I wanted to approximate Australia as a circle, but what I actually mean is that I want to map Australia onto the unit disc. What is the difference between a circle and a disc? A circle is all the points which lie in a plane and are equidistant to some centre. A disk is all the points that fall inside a circle (and may or may not include the circle itself). So the new coastline of my round Australia will be a circle, but Australia itself will be a disc -- I will be making Australia into a Discworld. 
+
+Before we get into how on Earth we can do this thing, let's get Australia into our computer so we can start playing around. I will use `rnaturalearth` data for this. I will also grab some coordinates for Australian cities so we have something initially to plot on our disc Australia for context.
+
+```{r get_start_data}
+library(rnaturalearth)
+library(sf)
+library(maps)
+library(rmapshaper)
+library(tidyverse)
+library(ggplot2)
+library(ggrepel)
+
+Oz_cities <- world.cities %>%
+  dplyr::filter(country.etc == "Australia",
+                pop > 1000000 | name == "Darwin" | name == "Canberra") %>%
+  sf::st_as_sf(coords = c("long", "lat"), crs = 4326) %>%
+  sf::st_transform(3112) ## Geoscience Australia Lambert
+
+Oz_coast <- rnaturalearth::ne_states("Australia", returnclass = "sf") %>%
+  dplyr::filter(code_hasc %in% c("AU.NT",
+                                 "AU.WA",
+                                 "AU.CT",
+                                 "AU.NS",
+                                 "AU.SA",
+                                 "AU.VI",
+                                 "AU.QL")) %>%
+  rmapshaper::ms_filter_islands(1e+12) %>% ## get only mainland Australia
+  rmapshaper::ms_simplify(0.00125, weighting = 1) %>% ## simplify coast for easier computation later
+  sf::st_union() %>% 
+  sf::st_transform(3112) ## Geoscience Australia Lambert
+
+ggplot(Oz_coast ) +
+  geom_sf(fill = "grey20") +
+  geom_sf(data = Oz_cities, colour = "red", size = 3) +
+  ggrepel::geom_label_repel(
+    data = Oz_cities,
+    aes(label = name, geometry = geometry),
+    stat = "sf_coordinates",
+    min.segment.length = 0,
+    segment.color = "red",
+    force = 3,
+    direction = "both",
+    max.iter = 50000,
+    nudge_x = 10000,
+    nudge_y = -10000
+  ) +
+  #geom_sf_label(data = Oz_cities, aes(label = name)) +
+  theme_minimal()
+
+```
+
+Before we go further, apologies to Tasmania. You know I love you Tasmania, but the methods I'm going to explore only work very well on "simply connected" polygons, which means offshore islands are right out!
+
+When I initially thought of doing this I had some notion that I could send "rays" out from the centre of Australia to each point that I want to map to the unit circle. I could then calculate some polar coordinates based on how far each point was along these rays, relative to where they intersected the coast, and the angle of the ray. Easy right? But then I realised a fair number of these rays would intersect the coast in multiple places (wherever it was particularly "wiggly", or "peninsular"). I could probably figure out ways to deal with these edge cases, but when I started thinking about how I would back-transform from the unit circle back to the Australian coast (which is an important part of what I wanted to do). These edge cases seemed to add too much complexity for my taste. Here is a plot from an ealry attempt based on this idea, where I was trying to figure out where Canberra was on my Australian Discworld:
+
+```{r old_attempt, echo=FALSE}
+Oz_coastline <- sf::st_cast(Oz_coast, "LINESTRING")
+
+Oz_centre <- Oz_coast %>%
+  sf::st_centroid() %>%
+  sf::st_coordinates()
+
+canberra_coords <- Oz_cities %>%
+  dplyr::filter(name == "Canberra") %>%
+  sf::st_coordinates()
+
+## Make line from centre to Canberra
+init_line <- sf::st_linestring(rbind(Oz_centre, canberra_coords))
+
+## We need to extend the line until or past the coastline
+new_total_len <- 1e9 ## arbitrary large distance (in meters) to make sure line gets past coast
+current_line_len <- sqrt((Oz_centre[1] - canberra_coords[1])^2 + (Oz_centre[2] - canberra_coords[2])^2)
+new_x = canberra_coords[1] + (canberra_coords[1] - Oz_centre[1]) / current_line_len * new_total_len
+new_y = canberra_coords[2] + (canberra_coords[2] - Oz_centre[2]) / current_line_len * new_total_len
+new_end <- c(new_x, new_y)
+
+final_line <- sf::st_linestring(rbind(Oz_centre, new_end))
+
+projection_line <- st_sfc(final_line, crs = sf::st_crs(Oz_coastline))
+
+point_of_intersection <- sf::st_intersection(Oz_coastline, projection_line)
+plot(Oz_coastline)
+plot(projection_line, add = TRUE)
+plot(point_of_intersection, add = TRUE)
+plot(sf::st_point(canberra_coords), col = "red", add = TRUE)
+
+```
+
+So I abandoned the idea for a little while, but my thoughts kept straying back. Surely someone had worked out how to map various shapes to a unit disk? Why would they have done this? I wasn't sure yet, but I knew the idea had to have intrigued others as it had me. And it turns out, indeed, there is a whole fascinating little branch of mathematics devoted to this [idea](https://en.wikipedia.org/wiki/Riemann_mapping_theorem)! Generally what I wanted to do was a type of mapping known as conformal mapping (conformal means angle-preserving). Of course, map projections themselves are related to this branch of mathematics.
+
+Since the math involved was definitely over my head, I set out on trying to find a ready-made implementation I could give a try, as I wasn't about to implement it myself. After searching for quite some time I was beginning to despair that I would have to swallow my pride and use some matlab code for this, as it seemed it was the only publicly available code for doing this. But then, out of nowhere, I discovered [this hidden little gem](https://rdrr.io/rforge/conformal/): an R package, found only on R-forge as far as I can tell, which does conformal mapping by wrapping some Fortran code. Brilliant! Thank you Nick Ellis from CSIRO for making this available! I plan to get in touch with Nick Ellis to try and convince him to put this on github to be accessible to more people, because it is really cool. If you want to install it yourself use: `r install.packages("conformal", repos="http://R-Forge.R-project.org")`.
+
+So, to use `conformal`, I need to transform my map of Australia into a set of points, going in anticlockwise order. I actually don't know what order `sf` uses by default, so to find out let's plot the (mainland) Australia
+
+```{r make_oz_poly}
+Oz_poly <- Oz_coast %>%
+  sf::st_coordinates() %>%
+  as.data.frame()
+
+ggplot(Oz_poly, aes(X, Y)) +
+  geom_path(arrow = arrow(type = "closed")) +
+  theme_minimal()
+
+```
+
+Looks like it is clockwise by default, so let's reverse it!
+
+```{r make_oz_poly_2}
+Oz_coord <- Oz_coast %>%
+  sf::st_coordinates() %>%
+  as.data.frame() %>%
+  tibble::rowid_to_column()
+
+Oz_coord_tr <- Oz_coord %>%
+  dplyr::summarise(mean_length = mean(sqrt(X^2 + Y^2)))
+
+Oz_poly <- Oz_coord %>%
+  dplyr::arrange(dplyr::desc(rowid)) %>%
+  dplyr::mutate_at(vars(X, Y), ~ . / Oz_coord_tr$mean_length)
+
+ggplot(Oz_poly, aes(X, Y)) +
+  geom_path(arrow = arrow(type = "closed")) +
+  theme_minimal()
+
+```
+
+Okay, now it is anticlockwise. Let's convert it to the list format required by `conformal` and see if we can run the workhorse function of `conformal`, `conformalFit`. After trying for awhile to get it to work, where the function continually crashed, I discovered to my shock and dismay, buried in the documnetation of the original Fortran code that the maximum number of vertices allowed is 20! A 20 vertice Australia will be pretty sad looking, but I've come this far, so let's at least try it! If it works then maybe I will need to go looking for another implementation again! I will use the `rmapshaper` package to simplify my Australia polygon. I will also transform the coordinates onto a more reasonable scale.
+
+```{r try_conformal}
+Oz_poly_list <- list(x = Oz_poly$X[-1], y = Oz_poly$Y[-1])
+plot(Oz_poly_list)
+
+cfit <- conformal::conformalFit(Oz_poly_list)
+
+cfit
+
+```
+
+So that worked! Now let's try mapping our Australia cities on the unit disk.
+
+```{r map_cities_disk}
+city_coords <- Oz_cities %>%
+  sf::st_coordinates()  %>%
+  as.data.frame() %>%
+  dplyr::mutate_at(vars(X, Y), ~ . / Oz_coord_tr$mean_length)
+
+city_list <- list(x = city_coords$X, y = city_coords$Y)
+city_list_R <- conformal::listxy2R(city_list)
+
+pred <- conformal::conformalPredict(cfit, city_list_R, polygon2disk = TRUE)
+cPred <- conformal::R2C(pred)
+plot(cPred)
+
+plot(matrix(pred, ncol = 2, byrow = TRUE))
+  
+```
+
+So what I want to do is map every point inside Australia onto a point inside a unit circle. To do this, I will start with the idea of expressing each point in the unit circle in polar coordinates. Polar coordinates allow us to locate a point in the circle with two values, a radius (which must be less than or equal to one), and an angle (which must be between 0 and 360 degrees) between a line drawn from the origin and passing through the point and an arbitrary reference line passing through the origin. [image of polar coordinates]. 
+
+Now it is fairly simple to think of an analog of these two measures for the real-world Australia. For the radius we can calculate the distance between any point in Australia and Australia's centre. We can then standardise this distance by dividing it by the length of the line segment passing throught the point and bounded by Australia's centre and it's coastline. Likewise, we can find the point at which this same line meets the coastline, and use it to calculate an "angle". Here we simply find the length between this point and an arbitrary reference point on the coastline as measured along the coastline. We then divide this by the entire length of the Australian coastline, giving us a proportion. We can then map this to an angle by multiplying by 360 degrees. It is also fairly straightforward to reverse this procedure, and map any point in the unit disc to Australia.
+
+Now all we need is some points to actually map onto the disc, and we can test this idea out! Let's get the location of major citiesto start. We will also grab a map of Australia's coastline to work with. We will use the packages `rnaturalearth` and `sf` extensively. We will use the `maps` package for city data. And of course, `tidyverse`. `rmapshader` also provides some awesome geographic functionality by linking up to the mapshader javascript library. We will work with a map of Australia in the Geoscience Australia recommended projection GDA94, which is a Lambert Conformal Conic projection.
+
+
+
+Okay, great. Now let's start by mapping one city from Australia to the unit disc. We will try the capital of Australia first, Canberra. First we need to convert our Australia polygon into a (coast-)line. Then we need to find the centre of Australia and pass a line through it and Canberra. 
+
+```{r pass_line_through_Canberra}
+Oz_coastline <- sf::st_cast(Oz_coast, "LINESTRING")
+plot(Oz_coastline)
+
+Oz_centre <- Oz_coast %>%
+  sf::st_centroid() %>%
+  sf::st_coordinates()
+
+canberra_coords <- Oz_cities %>%
+  dplyr::filter(name == "Canberra") %>%
+  dplyr::select(long, lat) %>%
+  unlist() %>%
+  sf::st_point() %>%
+  sf::st_sfc(crs = 4326) %>%
+  sf::st_transform(3112) %>%
+  sf::st_coordinates()
+
+## Make line from centre to Canberra
+init_line <- sf::st_linestring(rbind(Oz_centre, canberra_coords))
+
+plot(Oz_coastline)
+plot(init_line, add = TRUE)
+
+## We need to extend the line until or past the coastline
+new_total_len <- 1e9 ## arbitrary large distance (in meters) to make sure line gets past coast
+current_line_len <- sqrt((Oz_centre[1] - canberra_coords[1])^2 + (Oz_centre[2] - canberra_coords[2])^2)
+new_x = canberra_coords[1] + (canberra_coords[1] - Oz_centre[1]) / current_line_len * new_total_len
+new_y = canberra_coords[2] + (canberra_coords[2] - Oz_centre[2]) / current_line_len * new_total_len
+new_end <- c(new_x, new_y)
+
+final_line <- sf::st_linestring(rbind(Oz_centre, new_end))
+
+projection_line <- st_sfc(final_line, crs = sf::st_crs(Oz_coastline))
+
+plot(Oz_coastline)
+plot(projection_line, add = TRUE)
+
+```
+
+Okay, next we need to get the point of the coast where this line intersects.
+
+```{r line_intersect}
+point_of_intersection <- sf::st_intersection(Oz_coastline, projection_line)
+plot(Oz_coastline)
+plot(projection_line, add = TRUE)
+plot(point_of_intersection, add = TRUE)
+plot(sf::st_point(canberra_coords), col = "red", add = TRUE)
+```
+Cool! Okay, let's decide on an arbitrary point on the coast to measure distance along the coast from. I will just use the point on a vertical line coming from the centre.
+
+```{r starting_point}
+top_point <- c(Oz_centre[1], Oz_centre[2] + new_total_len)
+
+reference_line <-sf::st_linestring(rbind(Oz_centre, top_point)) %>%
+  sf::st_sfc(crs = sf::st_crs(Oz_coastline))
+
+plot(Oz_coastline)
+plot(projection_line, add = TRUE)
+plot(reference_line, add = TRUE)
+```
+Now glue them together and use them to chop the coastline into segment. We can then get our distance around the coast by measuring the segment length (after deciding which segment to use).
+
+```{r combine_cut}
+cutter <- sf::st_combine(c(reference_line, projection_line))
+
+split_coast <- lwgeom::st_split(Oz_coastline, cutter)
+
+## For some reason that split the coast into three!
+plot(split_coast[[1]][[1]], col = "blue")
+plot(split_coast[[1]][[2]], col = "green", add = TRUE)
+plot(split_coast[[1]][[3]], col = "red", add = TRUE)
+plot(cutter, add = TRUE)
+```
+I'm honestly not sure why I got three segments, but it looks like the green section is what I want. The question is, how do I reliably find the correct segment. One easy way would be to convert my two line cutter into a pie wedge kind of thingie, and instead of using `st_split`, I could use `st_intersection`. Let's try that. 
+
+```{r make_pie_wedge}
+
+calc_line_angle <- function(end_xy) {
+  atan2(end_xy[2], end_xy[1]) * (-1) + (pi/2)
+}
+
+end_of_projection_line <- projection_line %>%
+                         sf::st_coordinates() %>%
+                         .[2, 1:2]
+ang <- calc_line_angle(end_of_projection_line)
+
+## draw circle arc to connect reference and projection line
+extra_segments <- sapply(c(seq(pi/2, pi/2 - ang, by = -0.1), pi/2 - ang), function(theta) Oz_centre + new_total_len * c(cos(theta), sin(theta))) %>%
+  t %>%
+  rbind(end_of_projection_line) %>%
+  sf::st_linestring()  %>%
+  sf::st_sfc(crs = sf::st_crs(Oz_coastline))
+
+wedge <- sf::st_union(reference_line, extra_segments) %>%
+  sf::st_union(projection_line) %>%
+  sf::st_cast("POINT") %>% 
+  sf::st_sf() %>%
+  concaveman::concaveman() ## trick to make a good polygon even if points don't exactly meet or are out of order
+
+plot(wedge)
+
+## get line segment
+
+coast_cut <- sf::st_intersection(Oz_coastline, wedge)
+plot(coast_cut)
+
+```
+
+Yay! So what is the length? And what proportion of the coastline is it?
+
+```{r measure_cut}
+seg_len <- sf::st_length(coast_cut)
+cat("The coastal segment is", seg_len %>% as.numeric() / 1000, "km long\n")
+
+coastline_len <- sf::st_length(Oz_coastline)
+cat("The Australian coastline is", coastline_len %>% as.numeric() / 1000, "km long\n")
+
+cat("So this coastal segment is", seg_len / coastline_len * 100, "% of the total coastline\n")
+```
+## Spherical Cows
+
