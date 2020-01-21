@@ -8,6 +8,7 @@ library(ggrepel)
 library(ggforce)
 library(distances)
 library(spdep)
+library(nimble)
 library(nCompiler)
 
 Oz_cities <- world.cities %>%
@@ -227,6 +228,31 @@ cosine_law <- function(r, inf_tol = 1000) {
   angle
 }
 
+r <- current_radii[1, ]
+cosine_law_eff <- function(r) {
+  angle <- 2*asin(sqrt((r[2] / (r[1] + r[2])) * (r[3] / (r[1] + r[3]))))
+  angle
+}
+
+cosine_law_n <- nCompiler::nFunction(
+  fun = cosine_law_eff,
+  argTypes = list(r = 'numericVector()'),
+  returnType = 'numericScalar()'
+)
+
+cosine_law_c <- nCompiler::nCompile_nFunction(cosine_law_n)
+
+cosine_law_n <- nimbleFunction(run = function(r = double(1)){ ## type declarations
+  angle <- 2*asin(sqrt((r[2] / (r[1] + r[2])) * (r[3] / (r[1] + r[3]))))
+  return(angle)
+  returnType(double(0)) ## return type declaration
+})
+
+cosine_law_c <- compileNimble(cosine_law_n)
+
+cosine_law_c(c(0.1, 0.1, 0.1))
+cosine_law_eff(c(0.1, 0.1, 0.1))
+
 boundary <- nnum < 6
 triangles <- lapply(seq_along(nnet), function(x) make_triangles(x, nnet[[x]]))
 circle_pack <- function(triangles, boundary, tol = 0.0001, smallest_radius = 1e-10) {
@@ -241,7 +267,7 @@ circle_pack <- function(triangles, boundary, tol = 0.0001, smallest_radius = 1e-
       current_circle <- triangles[[index]]  
       current_radii <- matrix(radii[current_circle], ncol = 3)
       
-      angle_sum <- sum(apply(current_radii, 1, cosine_law))
+      angle_sum <- sum(apply(current_radii, 1, cosine_law_c))
       
       if(!is.finite(angle_sum)) {
         print(index)
@@ -266,26 +292,67 @@ circle_pack <- function(triangles, boundary, tol = 0.0001, smallest_radius = 1e-
         radii[index] <- u
       }
       error[i] <- abs(e)
-      radii[index]
+      #radii[index]
     }
     print(sum(error))
   }
 }
 
-plot(coords[current_circle[1,], ])
-text(coords[current_circle[1,], ])
+###### Try out Nimble solution ###########
 
-plot(coords[current_circle[2,], ])
-text(coords[current_circle[2,], ])
+triangle_array <- do.call(function(...) abind(..., along = 0), triangles[!boundary])
 
-plot(coords[current_circle[3,], ])
-text(coords[current_circle[3,], ])
+circle_centre <- nimbleFunction(
+  setup = function(triangle_array, boundary, tol = 0.001) {
+    triangle_array <- triangle_array
+    boundary <- boundary
+    nonboundary <- which(!boundary)
+    radii <- runif(length(boundary), 0.4, 0.68)
+    error <- rep(99, length(boundary))
+  },
+  run = function() {
+    
+    while(any(error > tol)) {
+     for(index in 1:dim(triangle_array)[1]) {
+       current_circle <- triangle_array[index, , ]  
+       current_radii <- matrix(radii[c(current_circle)], ncol = 3)
+       
+       angles <- numeric(dim(current_radii)[1])
+       for(j in 1:(dim(current_radii)[1])) {
+         angles[j] <- 2*asin(sqrt((current_radii[j, 2] / (current_radii[j, 1] + current_radii[j, 2])) * (current_radii[j, 3] / (current_radii[j, 1] + current_radii[j, 3]))))
+       }
+       angle_sum <- sum(angles)
+       
+       e <- 2 * pi - angle_sum
+       if(abs(e) > tol) {
+         
+         beta <- sin((angle_sum) / (2 * 6))
+         delta = sin((2 * pi) / (2 * 6))
+         
+         v <- (beta / (1 - beta)) * radii[index]
+         u <- ((1 - delta) / delta) * v
+         
+         # d <- min(abs(e), 1)
+         # if(e > 0) {
+         #   radii[index] <- (1 - (1 / 10) * d) * radii[index]
+         # } else {
+         #   radii[index] <- (1 + (1 / 10) * d) * radii[index]
+         # }
+         radii[nonboundary[index]] <<- u
+       }
+       error[index] <<- abs(e)
 
-plot(coords[current_circle[4,], ])
-text(coords[current_circle[4,], ])
+     }
+    print(sum(error))
+       
+  }
+   
+  }
+)
 
-plot(coords[current_circle[5,], ])
-text(coords[current_circle[5,], ])
+circle_centre_setup <- circle_centre(triangle_array, boundary)
+circle_centre_c <-  compileNimble(circle_centre_setup, showCompilerOutput = TRUE)
 
-plot(coords[current_circle[6,], ])
-text(coords[current_circle[6,], ])
+circle_centre_c$error
+
+circle_centre_c$run()
